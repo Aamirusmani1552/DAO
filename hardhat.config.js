@@ -5,7 +5,7 @@ require("hardhat-contract-sizer");
 require("hardhat-gas-reporter");
 require("solidity-coverage");
 require("dotenv").config();
-
+require("@nomiclabs/hardhat-ethers");
 /**
  * @type import('hardhat/config').HardhatUserConfig
  */

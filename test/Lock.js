@@ -1,126 +1,115 @@
 const {
-  time,
-  loadFixture,
-} = require("@nomicfoundation/hardhat-network-helpers");
-const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
-const { expect } = require("chai");
+  FUNCTION,
+  VALUE,
+  DESCRIPTION,
+  VOTING_DELAY,
+  proposalFile,
+  developmentChains,
+  VOTING_PERIOD,
+  MIN_DELAY,
+} = require("../helper-hardhat-config");
+const { network, ethers, deployments } = require("hardhat");
+const moveBlocks = require("../utils/moveBlocks");
+const moveTime = require("../utils/moveTime");
+const { assert } = require("chai");
+const fs = require("fs");
 
-describe("Lock", function () {
-  // We define a fixture to reuse the same setup in every test.
-  // We use loadFixture to run this setup once, snapshot that state,
-  // and reset Hardhat Network to that snapshopt in every test.
-  async function deployOneYearLockFixture() {
-    const ONE_YEAR_IN_SECS = 365 * 24 * 60 * 60;
-    const ONE_GWEI = 1_000_000_000;
-
-    const lockedAmount = ONE_GWEI;
-    const unlockTime = (await time.latest()) + ONE_YEAR_IN_SECS;
-
-    // Contracts are deployed using the first signer/account by default
-    const [owner, otherAccount] = await ethers.getSigners();
-
-    const Lock = await ethers.getContractFactory("Lock");
-    const lock = await Lock.deploy(unlockTime, { value: lockedAmount });
-
-    return { lock, unlockTime, lockedAmount, owner, otherAccount };
-  }
-
-  describe("Deployment", function () {
-    it("Should set the right unlockTime", async function () {
-      const { lock, unlockTime } = await loadFixture(deployOneYearLockFixture);
-
-      expect(await lock.unlockTime()).to.equal(unlockTime);
-    });
-
-    it("Should set the right owner", async function () {
-      const { lock, owner } = await loadFixture(deployOneYearLockFixture);
-
-      expect(await lock.owner()).to.equal(owner.address);
-    });
-
-    it("Should receive and store the funds to lock", async function () {
-      const { lock, lockedAmount } = await loadFixture(
-        deployOneYearLockFixture
-      );
-
-      expect(await ethers.provider.getBalance(lock.address)).to.equal(
-        lockedAmount
-      );
-    });
-
-    it("Should fail if the unlockTime is not in the future", async function () {
-      // We don't use the fixture here because we want a different deployment
-      const latestTime = await time.latest();
-      const Lock = await ethers.getContractFactory("Lock");
-      await expect(Lock.deploy(latestTime, { value: 1 })).to.be.revertedWith(
-        "Unlock time should be in the future"
-      );
-    });
-  });
-
-  describe("Withdrawals", function () {
-    describe("Validations", function () {
-      it("Should revert with the right error if called too soon", async function () {
-        const { lock } = await loadFixture(deployOneYearLockFixture);
-
-        await expect(lock.withdraw()).to.be.revertedWith(
-          "You can't withdraw yet"
-        );
+!developmentChains.includes(network.name)
+  ? describe.skip
+  : describe("Test for dao", () => {
+      let box, governor, governanceToken, timeLock;
+      beforeEach(async () => {
+        await deployments.fixture("all");
+        box = await ethers.getContract("Box");
+        governor = await ethers.getContract("MyGovernor");
+        timeLock = await ethers.getContract("Timelock");
+        governanceToken = await ethers.getContract("AToken");
       });
 
-      it("Should revert with the right error if called from another account", async function () {
-        const { lock, unlockTime, otherAccount } = await loadFixture(
-          deployOneYearLockFixture
+      it("Should perform overall task of changing value", async () => {
+        console.log("step 1: ");
+        const encodedFunctionCall = await box.interface.encodeFunctionData(
+          FUNCTION,
+          [VALUE]
         );
 
-        // We can increase the time in Hardhat Network
-        await time.increaseTo(unlockTime);
-
-        // We use lock.connect() to send a transaction from another account
-        await expect(lock.connect(otherAccount).withdraw()).to.be.revertedWith(
-          "You aren't the owner"
+        console.log(
+          `Proposing ${FUNCTION} on ${box.address} for value ${VALUE}`
         );
-      });
-
-      it("Shouldn't fail if the unlockTime has arrived and the owner calls it", async function () {
-        const { lock, unlockTime } = await loadFixture(
-          deployOneYearLockFixture
+        console.log(`Proposal Description: ${DESCRIPTION}`);
+        const propsalTx = await governor.propose(
+          [box.address],
+          [0],
+          [encodedFunctionCall],
+          DESCRIPTION
         );
 
-        // Transactions are sent using the first signer by default
-        await time.increaseTo(unlockTime);
+        if (developmentChains.includes(network.name)) {
+          await moveBlocks(VOTING_DELAY + 1);
+        }
 
-        await expect(lock.withdraw()).not.to.be.reverted;
+        const propsalReciept = await propsalTx.wait(1);
+        const proposalId = propsalReciept.events[0].args.proposalId;
+
+        let proposals = JSON.parse(fs.readFileSync(proposalFile, "utf8"));
+        console.log(proposals, "are these");
+        proposals[network.config.chainId.toString()].push(
+          proposalId.toString()
+        );
+
+        fs.writeFileSync(proposalFile, JSON.stringify(proposals));
+
+        console.log("step 2");
+        console.log("voting...");
+        proposals = JSON.parse(fs.readFileSync(proposalFile, "utf-8"));
+        const proposal = proposals[network.config.chainId.toString()][0];
+        const Vote = 1;
+        const reason = "because i like it";
+        const voteTx = await governor.castVoteWithReason(
+          proposal,
+          Vote,
+          reason
+        );
+
+        const voteResponse = await voteTx.wait(1);
+        const returnedReason = voteResponse.events[0].args.reason;
+        console.log(returnedReason);
+        const state = await governor.state(proposal);
+
+        console.log("Proposal state: ", state);
+
+        if (developmentChains.includes(network.name)) {
+          await moveBlocks(VOTING_PERIOD + 1);
+        }
+
+        console.log("step 3 and 4: ");
+        console.log("Queueing...");
+        const descriptionHash = ethers.utils.keccak256(
+          ethers.utils.toUtf8Bytes(DESCRIPTION)
+        );
+        const queueTx = await governor.queue(
+          [box.address],
+          [0],
+          [encodedFunctionCall],
+          descriptionHash
+        );
+        await queueTx.wait(1);
+
+        if (developmentChains.includes(network.name)) {
+          await moveTime(MIN_DELAY + 1);
+          await moveBlocks(1);
+        }
+        console.log("Executing...");
+
+        const executeTx = await governor.execute(
+          [box.address],
+          [0],
+          [encodedFunctionCall],
+          descriptionHash
+        );
+        await executeTx.wait(1);
+        const boxNewValue = await box.getValue();
+        console.log("box new value: ", boxNewValue.toString());
+        assert.equal(boxNewValue.toString(), "77");
       });
     });
-
-    describe("Events", function () {
-      it("Should emit an event on withdrawals", async function () {
-        const { lock, unlockTime, lockedAmount } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw())
-          .to.emit(lock, "Withdrawal")
-          .withArgs(lockedAmount, anyValue); // We accept any value as `when` arg
-      });
-    });
-
-    describe("Transfers", function () {
-      it("Should transfer the funds to the owner", async function () {
-        const { lock, unlockTime, lockedAmount, owner } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw()).to.changeEtherBalances(
-          [owner, lock],
-          [lockedAmount, -lockedAmount]
-        );
-      });
-    });
-  });
-});

@@ -12,7 +12,7 @@ const index = 0;
 
 async function vote() {
   if (developmentChains.includes(network.name)) {
-    await deployments.fixture(["all"]);
+    await deployments.fixture("all");
   }
   const proposals = JSON.parse(fs.readFileSync(proposalFile, "utf-8"));
   const proposal = proposals[network.config.chainId.toString()][index];

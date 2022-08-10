@@ -12,7 +12,7 @@ const moveBlocks = require("../utils/moveBlocks");
 const fs = require("fs");
 
 const propose = async (func, args, description) => {
-  await deployments.fixture(["all"]);
+  await deployments.fixture("all");
   const governor = await ethers.getContract("MyGovernor");
   const box = await ethers.getContract("Box");
 
